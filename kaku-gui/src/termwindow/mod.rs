@@ -3793,10 +3793,13 @@ impl TermWindow {
 
     pub(crate) fn update_title_impl(&mut self) {
         let mux = Mux::get();
-        let window = match mux.get_window(self.mux_window_id) {
-            Some(window) => window,
-            _ => return,
+        let num_tabs = match mux.window_tab_count(self.mux_window_id) {
+            Some(num_tabs) => num_tabs,
+            None => return,
         };
+        // 这里不持窗口读锁：后面的 get_tab_information / get_pane_information /
+        // active_agent_title 内部还会取 mux 的 windows 读锁，锁内套锁在有写者
+        // 排队时会死锁（tmux -CC 退出路径的 domain_was_detached 就是写者）。
         let tabs = self.get_tab_information();
         let panes = self.get_pane_information();
         let active_tab = tabs.iter().find(|t| t.is_active).cloned();
@@ -3859,11 +3862,9 @@ impl TermWindow {
             }
         }
 
-        let num_tabs = window.len();
         if num_tabs == 0 {
             return;
         }
-        drop(window);
 
         let title = match config::run_immediate_with_lua_config(|lua| {
             if let Some(lua) = lua {
@@ -6915,6 +6916,24 @@ mod tests {
             .next()
             .unwrap();
         assert!(reload.contains("window_configuration(self.window_state"));
+    }
+
+    /// update_title_impl 不得持窗口读锁。
+    ///
+    /// 它后面调的 get_tab_information / get_pane_information 内部还要再取
+    /// mux 的 windows 读锁，锁内套锁在有写者排队时死锁（tmux -CC 退出的
+    /// domain_was_detached 就是那个写者）。窗口里的 tab 数用
+    /// Mux::window_tab_count 取，它不把锁交给调用方。
+    #[test]
+    fn update_title_does_not_hold_the_window_read_lock() {
+        let source = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+        let update = source.split("fn update_title_impl(").nth(1).unwrap();
+        let update = update.split("\n    }\n").next().unwrap();
+        assert!(
+            !update.contains("mux.get_window("),
+            "update_title_impl 不能持窗口读锁，改用 mux.window_tab_count()"
+        );
+        assert!(update.contains("mux.window_tab_count("));
     }
 
     #[test]

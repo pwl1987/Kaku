@@ -1457,6 +1457,15 @@ impl Mux {
         window.get_active().map(Arc::clone)
     }
 
+    /// 窗口里的 tab 数量。
+    ///
+    /// 不像 get_window 那样把读锁交给调用方：调用方后面还要再取 mux 的
+    /// 读锁，锁内套锁会在有写者排队时死锁（parking_lot 的公平策略）。
+    pub fn window_tab_count(&self, window_id: WindowId) -> Option<usize> {
+        let guard = self.windows.read();
+        guard.get(&window_id).map(|w| w.len())
+    }
+
     pub fn new_empty_window(
         &self,
         workspace: Option<String>,
@@ -1571,9 +1580,14 @@ impl Mux {
             }
         }
 
+        // 只取读锁：kill_panes_in_domain 和 Window::iter 都是 &self，写操作在
+        // Tab 自己的 inner Mutex 里。此函数在 PTY 解析线程上运行，若取写锁，
+        // 它会等 GUI 主线程手里的窗口读锁清零；而 GUI 主线程若在持锁期间
+        // 再取一次读锁（锁内套锁），两边互等，整个 Kaku 卡死。
+        // tmux -CC 立即退出即触发：PTY 线程走这里，GUI 主线程同时在刷标题。
         {
-            let mut windows = self.windows.write();
-            for (_, win) in windows.iter_mut() {
+            let windows = self.windows.read();
+            for win in windows.values() {
                 for tab in win.iter() {
                     tab.kill_panes_in_domain(domain);
                 }
@@ -2022,5 +2036,37 @@ mod tests {
         state.end();
 
         assert!(!state.is_due(start + Duration::from_secs(2), 1000, true));
+    }
+
+    /// 持窗口读锁时调用 domain_was_detached 不能卡死。
+    ///
+    /// 旧实现取 windows 写锁：同一线程已经持着读锁，写者要等读锁清零，
+    /// 而那个读锁只有本线程能释放 —— 永久等待。tmux -CC 立即退出时正是
+    /// 这个组合：GUI 主线程持窗口读锁，PTY 线程走 domain_was_detached。
+    #[test]
+    fn detach_under_window_read_lock_does_not_deadlock() {
+        use super::{DomainId, Mux, Window};
+        use std::sync::Arc;
+
+        let mux = Arc::new(Mux::new(None));
+        // 直接塞一个空窗口，不走 new_empty_window：那会碰全局 Mux，
+        // 并行跑测试时会互相干扰。
+        let window = Window::new(Some("default".to_string()), None);
+        let window_id = window.window_id();
+        mux.windows.write().insert(window_id, window);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mux2 = Arc::clone(&mux);
+        let worker = std::thread::spawn(move || {
+            let _guard = mux2.get_window(window_id);
+            mux2.domain_was_detached(DomainId::new(9999));
+            let _ = tx.send(());
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "domain_was_detached 在调用方持有窗口读锁时死锁（它只能取读锁）"
+        );
+        let _ = worker;
     }
 }
