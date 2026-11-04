@@ -259,6 +259,7 @@ ucd-trie = {version="0.1", default-features=false}
 umask = { path = "crates/umask" }
 unicode-normalization = "0.1.24"
 unicode-segmentation = "1.12"
+unicode-width = "0.2.0"
 url = "2"
 url-funcs = { path = "lua-api-crates/url-funcs" }
 utf8parse = "0.2"

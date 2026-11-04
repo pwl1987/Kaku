@@ -18,7 +18,7 @@ use std::path::Path;
 pub(in crate::ai_config::tui) fn parse_kaku_assistant_config(raw: &str) -> KakuAssistantConfig {
     let parsed = raw.parse::<toml::Value>().unwrap_or_else(|e| {
         log::warn!("failed to parse assistant.toml: {}", e);
-        push_ui_error("Kaku Assistant config TOML is malformed");
+        push_ui_error(crate::i18n::tr("Kaku Assistant config TOML is malformed"));
         toml::Value::Table(Default::default())
     });
 
@@ -456,7 +456,7 @@ pub(in crate::ai_config::tui) fn save_kaku_assistant_field_to_path(
             ) =>
         {
             log::warn!("failed to read assistant config {}: {}", path.display(), e);
-            push_ui_error(format!(
+            push_ui_error(crate::trf!(
                 "cannot read {}. Check file permission or encoding.",
                 path.display()
             ));

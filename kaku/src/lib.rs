@@ -26,13 +26,14 @@ use umask::UmaskSaver;
 use wezterm_gui_subcommands::*;
 
 mod ai_config;
-mod assistant_config;
+pub mod assistant_config;
 mod chat;
 mod cli;
 mod config_cmd;
 mod config_tui;
 mod diagnostics;
 mod doctor;
+pub mod i18n;
 mod init;
 mod kaku_theme;
 mod reset;
@@ -683,6 +684,9 @@ fn read_hidden_line(prompt: &str) -> anyhow::Result<String> {
 pub fn cli_main() {
     config::designate_this_as_the_main_thread();
     config::assign_error_callback(mux::connui::show_configuration_error_message);
+    // The overlay language pack is loaded by the surfaces that render text
+    // (the TUI run() entry points), not here: the pack directory follows
+    // the effective config file, which is only known after config parsing.
     if let Err(e) = run() {
         terminate_with_error(e);
     }

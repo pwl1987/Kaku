@@ -3279,6 +3279,7 @@ dependencies = [
  "toml",
  "toml_edit 0.22.27",
  "umask",
+ "unicode-width 0.2.0",
  "url",
  "wezterm-client",
  "wezterm-gui-subcommands",

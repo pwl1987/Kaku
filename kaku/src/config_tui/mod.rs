@@ -40,6 +40,11 @@ pub fn run(
     if let Err(e) = config::common_init(config_file.as_ref(), &config_override, skip_config) {
         log::error!("config init failed: {:#}", e);
     }
+    // Pick up the overlay language pack. This runs *after* common_init so
+    // the pack is looked up next to the config file Kaku actually loaded
+    // (`--config-file`, `KAKU_CONFIG_FILE`, then the default user path).
+    // A pack edited mid-session takes effect the next time this TUI starts.
+    crate::i18n::load();
     let mut app = App::new(config_path);
     app.load_config();
 
@@ -174,13 +179,15 @@ fn save_with_feedback(
     }
 
     terminal
-        .draw(|f| crate::tui_splash::render_splash_with_spinner(f, "Saving...", '◐'))
+        .draw(|f| {
+            crate::tui_splash::render_splash_with_spinner(f, &crate::i18n::tr("Saving..."), '◐')
+        })
         .ok();
 
     app.save_if_dirty()?;
 
     terminal
-        .draw(|f| crate::tui_splash::render_splash_with_spinner(f, "Saved", '*'))
+        .draw(|f| crate::tui_splash::render_splash_with_spinner(f, &crate::i18n::tr("Saved"), '*'))
         .ok();
     std::thread::sleep(Duration::from_millis(200));
 

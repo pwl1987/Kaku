@@ -46,6 +46,7 @@ serde_json.workspace = true
 shell-words.workspace = true
 smol.workspace = true
 tabout.workspace = true
+unicode-width.workspace = true
 tempfile.workspace = true
 termwiz-funcs.workspace = true
 termwiz.workspace = true

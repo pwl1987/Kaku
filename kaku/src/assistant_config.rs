@@ -31,9 +31,34 @@ pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// The file is located in the same directory as the user's Kaku config,
 /// typically `~/.config/kaku/assistant.toml` on macOS/Linux.
 ///
+/// `KAKU_ASSISTANT_TOML` overrides the location entirely. This is the test
+/// escape hatch for scratch environments: the default path resolves through
+/// `config::user_config_path()`, which prefers `XDG_CONFIG_HOME` over `$HOME`
+/// and inherits both from the launching shell — `open` hands the caller's
+/// environment to the app, so a test instance can end up reading and writing
+/// the real `~/.config/kaku/assistant.toml` (2026-11-04: a verification run
+/// overwrote the maintainer's `api_key` this way).
+///
 /// # Errors
 /// Returns an error if the user config path cannot be determined or has no parent directory.
 pub fn assistant_toml_path() -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("KAKU_ASSISTANT_TOML") {
+        let trimmed = path.to_string_lossy().trim().to_string();
+        if !trimmed.is_empty() {
+            // Accept `~/...` so a scratch file under a test HOME reads well;
+            // the GUI copy expands the same way.
+            let expanded = if let Some(rest) = trimmed.strip_prefix("~/") {
+                if let Some(home) = std::env::var_os("HOME") {
+                    Path::new(&home).join(rest)
+                } else {
+                    PathBuf::from(&trimmed)
+                }
+            } else {
+                PathBuf::from(&trimmed)
+            };
+            return Ok(expanded);
+        }
+    }
     let user_config_path = config::user_config_path();
     let config_dir = user_config_path
         .parent()
@@ -242,6 +267,7 @@ fn top_level_toml_has_key(content: &str, key: &str) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::sync::Mutex;
 
     #[test]
     fn required_keys_update_preserves_symlink_permissions_and_user_settings() {
@@ -395,5 +421,43 @@ api_key = "x"
                 .any(|line| line.starts_with("fast_model =")),
             "new default configs must not expose fast_model"
         );
+    }
+
+    #[test]
+    fn kaku_assistant_toml_env_overrides_the_default_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scratch = dir.path().join("assistant.toml");
+        // Env is process-global and `cargo test` runs tests in parallel
+        // threads; take a snapshot and hold a lock so concurrent env-touching
+        // tests (and the assertion itself) see a consistent value. CI runs
+        // nextest (one process per test), the lock is for local `cargo test`.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("KAKU_ASSISTANT_TOML");
+        std::env::set_var("KAKU_ASSISTANT_TOML", &scratch);
+        let resolved = assistant_toml_path().expect("resolve under override");
+        match saved {
+            Some(v) => std::env::set_var("KAKU_ASSISTANT_TOML", v),
+            None => std::env::remove_var("KAKU_ASSISTANT_TOML"),
+        }
+        assert_eq!(resolved, scratch);
+    }
+
+    #[test]
+    fn empty_kaku_assistant_toml_falls_back_to_the_default_path() {
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Compute the default with the variable out of the picture, then
+        // assert the empty override falls back to exactly that.
+        let saved = std::env::var_os("KAKU_ASSISTANT_TOML");
+        std::env::remove_var("KAKU_ASSISTANT_TOML");
+        let default = assistant_toml_path().expect("default path resolves");
+        std::env::set_var("KAKU_ASSISTANT_TOML", "");
+        let resolved = assistant_toml_path().expect("resolve under empty override");
+        match saved {
+            Some(v) => std::env::set_var("KAKU_ASSISTANT_TOML", v),
+            None => std::env::remove_var("KAKU_ASSISTANT_TOML"),
+        }
+        assert_eq!(resolved, default);
     }
 }

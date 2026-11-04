@@ -137,6 +137,11 @@ fn ui_errors() -> &'static Mutex<Vec<String>> {
 }
 
 fn push_ui_error(message: impl Into<String>) {
+    // Sink for already-rendered user-visible copy. Callers translate
+    // static English copy themselves (`crate::i18n::tr` for literals,
+    // `crate::trf!` for templates): translating here would look up a
+    // rendered, data-carrying sentence, which can double-translate and
+    // pollutes the miss list with runtime values instead of template keys.
     let message = message.into();
     let mut guard = match ui_errors().lock() {
         Ok(guard) => guard,
@@ -437,7 +442,7 @@ fn summarize_tool_fields(
 fn parse_json_with_debug(raw: &str, tool_label: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|e| {
         log::warn!("failed to parse {} config json: {}", tool_label, e);
-        push_ui_error(format!("{tool_label} config is invalid JSON"));
+        push_ui_error(crate::trf!("{} config is invalid JSON", tool_label));
         serde_json::Value::Null
     })
 }
@@ -445,7 +450,7 @@ fn parse_json_with_debug(raw: &str, tool_label: &str) -> serde_json::Value {
 fn parse_json_or_jsonc_with_debug(raw: &str, tool_label: &str) -> serde_json::Value {
     parse_json_or_jsonc(raw).unwrap_or_else(|e| {
         log::warn!("failed to parse {} config json/jsonc: {}", tool_label, e);
-        push_ui_error(format!("{tool_label} config is malformed"));
+        push_ui_error(crate::trf!("{} config is malformed", tool_label));
         serde_json::Value::Null
     })
 }
@@ -464,8 +469,9 @@ fn read_text_with_debug(path: &Path, context: &str) -> Option<String> {
             ) =>
         {
             log::warn!("{context}: failed to read {}: {}", path.display(), e);
-            push_ui_error(format!(
-                "{context}: cannot read {}. Check file permission or encoding.",
+            push_ui_error(crate::trf!(
+                "{}: cannot read {}. Check file permission or encoding.",
+                context,
                 path.display()
             ));
             None
@@ -481,7 +487,7 @@ fn parse_json_value_with_debug(raw: &str, context: &str) -> Option<serde_json::V
     serde_json::from_str(raw)
         .map_err(|e| {
             log::warn!("{context}: failed to parse json: {}", e);
-            push_ui_error(format!("{context}: invalid JSON format"));
+            push_ui_error(crate::trf!("{}: invalid JSON format", context));
         })
         .ok()
 }
@@ -496,7 +502,7 @@ fn decode_jwt_payload_with_debug(token: &str, context: &str) -> Option<serde_jso
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() < 2 {
         log::debug!("{context}: invalid jwt format");
-        push_ui_error(format!("{context}: invalid token format"));
+        push_ui_error(crate::trf!("{}: invalid token format", context));
         return None;
     }
 
@@ -510,13 +516,13 @@ fn decode_jwt_payload_with_debug(token: &str, context: &str) -> Option<serde_jso
         .decode(&payload)
         .map_err(|e| {
             log::debug!("{context}: failed to decode jwt payload: {}", e);
-            push_ui_error(format!("{context}: token payload decode failed"));
+            push_ui_error(crate::trf!("{}: token payload decode failed", context));
         })
         .ok()?;
     serde_json::from_slice(&decoded)
         .map_err(|e| {
             log::debug!("{context}: failed to parse jwt payload json: {}", e);
-            push_ui_error(format!("{context}: token payload JSON is invalid"));
+            push_ui_error(crate::trf!("{}: token payload JSON is invalid", context));
         })
         .ok()
 }
@@ -2085,11 +2091,11 @@ impl App {
         {
             self.field_index = 0;
         }
-        self.set_status(if self.assistant_collapsed {
+        self.set_status(crate::i18n::tr(if self.assistant_collapsed {
             "Kaku Assistant hidden"
         } else {
             "Kaku Assistant expanded"
-        });
+        }));
     }
 
     fn total_rows(&self) -> usize {
@@ -2171,11 +2177,13 @@ impl App {
     }
 
     fn set_error(&mut self, message: impl Into<String>) {
+        // See push_ui_error: the text arrives already translated.
         self.last_error = Some(message.into());
         self.error_expire = Some(Instant::now() + UI_ERROR_TTL);
     }
 
     fn set_status(&mut self, message: impl Into<String>) {
+        // See push_ui_error: the text arrives already translated.
         self.status_msg = Some(message.into());
         self.status_expire = Some(Instant::now() + UI_STATUS_TTL);
     }
@@ -2192,11 +2200,11 @@ impl App {
             .status()
         {
             Ok(status) if status.success() => {}
-            Ok(status) => self.set_error(format!(
+            Ok(status) => self.set_error(crate::trf!(
                 "Failed to open Antigravity (exit status: {})",
                 status
             )),
-            Err(err) => self.set_error(format!("Failed to open Antigravity: {}", err)),
+            Err(err) => self.set_error(crate::trf!("Failed to open Antigravity: {}", err)),
         }
     }
 
@@ -2449,7 +2457,7 @@ impl App {
         let field = &tool.fields[selected_field_idx];
 
         if tool.tool == Tool::Antigravity && field.key == "Model" {
-            self.set_status("Change the model in Antigravity settings.");
+            self.set_status(crate::i18n::tr("Change the model in Antigravity settings."));
             self.open_antigravity_app();
             return;
         }
@@ -2461,7 +2469,7 @@ impl App {
                 if let Some(auth_cmd) = reauth_command(tool.tool) {
                     self.open_in_terminal(auth_cmd);
                 } else if tool.tool == Tool::OpenClaw {
-                    self.set_status("OpenClaw uses API keys, check config file");
+                    self.set_status(crate::i18n::tr("OpenClaw uses API keys, check config file"));
                 }
             }
             return;
@@ -2542,10 +2550,10 @@ impl App {
         }
         let status_val = status_value_for_display(&field_key, &new_val);
         match save_field(tool_kind, &field_key, &new_val) {
-            Ok(()) => self.set_status(format!("Saved {} as {}", field_key, status_val)),
+            Ok(()) => self.set_status(crate::trf!("Saved {} as {}", field_key, status_val)),
             Err(e) => {
-                self.set_status(format!("Save failed: {}", e));
-                self.set_error(format!("Save failed: {}", e));
+                self.set_status(crate::trf!("Save failed: {}", e));
+                self.set_error(crate::trf!("Save failed: {}", e));
             }
         }
         // Selecting Web Search adds/removes the Search Key row, so prefer
@@ -2604,10 +2612,10 @@ impl App {
 
         let status_val = status_value_for_display(&field_key, &new_val);
         match save_field(tool_kind, &field_key, &new_val) {
-            Ok(()) => self.set_status(format!("Saved {} as {}", field_key, status_val)),
+            Ok(()) => self.set_status(crate::trf!("Saved {} as {}", field_key, status_val)),
             Err(e) => {
-                self.set_status(format!("Save failed: {}", e));
-                self.set_error(format!("Save failed: {}", e));
+                self.set_status(crate::trf!("Save failed: {}", e));
+                self.set_error(crate::trf!("Save failed: {}", e));
             }
         }
         // Keep the cursor on the row just edited after the disk reload, so
@@ -2698,10 +2706,12 @@ impl App {
         self.field_index = 0;
         self.restart_usage_loading();
         if models_refreshed {
-            self.set_status("AI settings refreshed");
+            self.set_status(crate::i18n::tr("AI settings refreshed"));
         } else {
-            self.set_status("Usage refreshed");
-            self.set_error("Models refresh failed. Kept local model cache.");
+            self.set_status(crate::i18n::tr("Usage refreshed"));
+            self.set_error(crate::i18n::tr(
+                "Models refresh failed. Kept local model cache.",
+            ));
         }
         let _ = self.sync_transient_errors();
     }
@@ -2720,7 +2730,7 @@ impl App {
             .stderr(std::process::Stdio::null())
             .status();
         if kaku_status.as_ref().is_ok_and(|status| status.success()) {
-            self.set_status("Opening in new Kaku tab...");
+            self.set_status(crate::i18n::tr("Opening in new Kaku tab..."));
             return;
         }
 
@@ -2731,8 +2741,11 @@ impl App {
             .arg(&script)
             .spawn()
         {
-            Ok(_) => self.set_status("Opening in new terminal window..."),
-            Err(_) => self.set_status(format!("Failed to open terminal. Run '{}' manually", cmd)),
+            Ok(_) => self.set_status(crate::i18n::tr("Opening in new terminal window...")),
+            Err(_) => self.set_status(crate::trf!(
+                "Failed to open terminal. Run '{}' manually",
+                cmd
+            )),
         }
     }
 }
@@ -3084,6 +3097,11 @@ pub fn run(
     if let Err(e) = config::common_init(config_file.as_ref(), &config_override, skip_config) {
         log::error!("config init failed: {:#}", e);
     }
+    // Pick up the overlay language pack. This runs *after* common_init so
+    // the pack is looked up next to the config file Kaku actually loaded
+    // (`--config-file`, `KAKU_CONFIG_FILE`, then the default user path).
+    // A pack edited mid-session takes effect the next time this TUI starts.
+    crate::i18n::load();
     let mut app = App::new();
 
     enable_raw_mode().context("enable raw mode")?;
@@ -3252,10 +3270,10 @@ fn run_loop(
                     KeyCode::Char('o') => {
                         if let Some(path) = app.config_path_to_open() {
                             match with_terminal_suspended(terminal, || open_path_in_editor(&path)) {
-                                Ok(()) => app.set_status("Opened config file"),
+                                Ok(()) => app.set_status(crate::i18n::tr("Opened config file")),
                                 Err(err) => {
                                     log::debug!("Failed to open config file: {}", err);
-                                    app.set_status(format!("Failed to open: {}", err));
+                                    app.set_status(crate::trf!("Failed to open: {}", err));
                                 }
                             }
                         }

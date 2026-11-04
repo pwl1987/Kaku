@@ -1,10 +1,98 @@
+use std::borrow::Cow;
+use std::collections::HashSet;
+
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use super::{App, Tool};
+use super::{App, FieldEntry, Tool};
+use crate::i18n::{display_width, pad_end_width, tr, truncate_width};
+use crate::tui_core::chrome::popup_title_line;
 use crate::tui_core::theme::{accent, bg, divider, muted, panel, primary, red, success, text_fg};
+
+/// 树行 key 的分隔符：`Provider ▸ Base URL`。
+const TREE_SEP: &str = " ▸ ";
+
+/// 树行缩进比普通行多 3 列（`    │  ` vs `    `），键宽要相应减去 3，
+/// 两类行的值列才对得齐。
+const TREE_INDENT_DELTA: usize = 3;
+
+/// 一个工具的可见标签。
+///
+/// 树行的 key 形如 `Provider ▸ Base URL`：前半是 provider 名（用户数据，
+/// 不能翻译，也不能进语言包的 key），后半才是界面文案。provider 名本身
+/// 那一行同样是用户数据，原样显示。
+fn visible_labels(fields: &[FieldEntry]) -> Vec<String> {
+    let provider_names: HashSet<&str> = fields
+        .iter()
+        .filter_map(|field| field.key.find(TREE_SEP).map(|pos| &field.key[..pos]))
+        .collect();
+    fields
+        .iter()
+        .map(|field| {
+            if let Some(pos) = field.key.find(TREE_SEP) {
+                let suffix = &field.key[pos + TREE_SEP.len()..];
+                return format!("↳ {}", tr(suffix));
+            }
+            if provider_names.contains(field.key.as_str()) {
+                return field.key.clone();
+            }
+            tr(&field.key).into_owned()
+        })
+        .collect()
+}
+
+/// 弹窗标题用的单字段版：弹窗（编辑器/选择器）每次重绘只需要当前字段
+/// 一个标签，不必为整表做翻译和 HashSet 构建。树行保留 provider 名
+/// （上下文），只翻译后半段文案。
+fn field_title(fields: &[FieldEntry], idx: usize) -> String {
+    let field = &fields[idx];
+    if let Some(pos) = field.key.find(TREE_SEP) {
+        return format!(
+            "{}{}{}",
+            &field.key[..pos],
+            TREE_SEP,
+            tr(&field.key[pos + TREE_SEP.len()..])
+        );
+    }
+    let is_provider_row = fields.iter().any(|f| {
+        f.key
+            .find(TREE_SEP)
+            .map(|pos| &f.key[..pos] == field.key.as_str())
+            == Some(true)
+    });
+    if is_provider_row {
+        return field.key.clone();
+    }
+    tr(&field.key).into_owned()
+}
+
+/// 头部摘要 = 静态英文前缀 + 用户数据（模型、账号、用量）。只翻译前缀，
+/// 数据原样保留，避免语言包里的巧合条目改写用户数据。
+fn tr_summary(summary: &str) -> Cow<'_, str> {
+    // Whole-string copy first (no data suffix to preserve).
+    const WHOLE: [&str; 6] = [
+        "Loading usage...",
+        "Setup failed",
+        "Config unreadable",
+        "Quota unavailable",
+        "Open Antigravity to sync quota",
+        "Open Antigravity to load quota",
+    ];
+    if WHOLE.contains(&summary) {
+        return tr(summary);
+    }
+    const PREFIXES: [&str; 2] = ["Ready · ", "Setup required · "];
+    for prefix in PREFIXES {
+        if let Some(rest) = summary.strip_prefix(prefix) {
+            let mut out = tr(prefix).into_owned();
+            out.push_str(rest);
+            return Cow::Owned(out);
+        }
+    }
+    Cow::Borrowed(summary)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MainLayoutMode {
@@ -110,6 +198,13 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_flat: Option<usize> = None;
     let mut flat = 0usize;
+    // 每个工具的可见标签在整帧里算一次：宽度和行渲染都用它，
+    // 语言包是进程级只读的，查表结果在帧内不变。
+    let labels: Vec<Vec<String>> = app
+        .tools
+        .iter()
+        .map(|tool| visible_labels(&tool.fields))
+        .collect();
 
     for (ti, tool) in app.tools.iter().enumerate() {
         let is_current_tool = ti == app.tool_index;
@@ -145,12 +240,13 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         }
         if let Some(summary) = &tool.summary {
             header.spans.push(Span::styled("  ", Style::default()));
-            header
-                .spans
-                .push(Span::styled(summary, Style::default().fg(text_fg())));
+            header.spans.push(Span::styled(
+                tr_summary(summary),
+                Style::default().fg(text_fg()),
+            ));
         } else if !tool.installed {
             header.spans.push(Span::styled(
-                "  not installed",
+                tr("not installed"),
                 Style::default().fg(muted()),
             ));
         }
@@ -165,6 +261,25 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             flat += 1;
             continue;
         }
+
+        // 一个工具一列宽度：普通行和树行的值列对齐（树行缩进多 3 列，
+        // 键宽相应减 3）。上限 30 列，超长译文按显示宽度截断，不会把值
+        // 挤出屏幕。
+        let tool_labels = &labels[ti];
+        let key_width = tool_labels
+            .iter()
+            .zip(tool.fields.iter())
+            .map(|(label, field)| {
+                display_width(label)
+                    + if field.key.contains(TREE_SEP) {
+                        TREE_INDENT_DELTA
+                    } else {
+                        0
+                    }
+            })
+            .max()
+            .unwrap_or(24)
+            .clamp(24, 30);
 
         for (fi, field) in tool.fields.iter().enumerate() {
             let display_index = if tool.tool == Tool::KakuAssistant {
@@ -193,14 +308,12 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 accent()
             };
 
-            let (display_key, extra_indent) = if let Some(pos) = field.key.find(" ▸ ") {
-                (format!("↳ {}", &field.key[pos + " ▸ ".len()..]), true)
-            } else {
-                (field.key.clone(), false)
-            };
+            let extra_indent = field.key.contains(TREE_SEP);
+            // 树行缩进多 3 列，键宽相应减 3，两类行的值列才对齐。
+            let row_key_width = key_width - if extra_indent { TREE_INDENT_DELTA } else { 0 };
+            let display_key = truncate_width(&tool_labels[fi], row_key_width);
 
             let indent_str = if extra_indent { "    │  " } else { "    " };
-            let key_width = if extra_indent { 21 } else { 24 };
             let tree_color = if is_selected { primary() } else { divider() };
             let row_color = if is_selected { primary() } else { text_fg() };
             let key_marker = if is_selected { "› " } else { "  " };
@@ -249,10 +362,7 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                             Modifier::empty()
                         }),
                 ),
-                Span::styled(
-                    format!("{:<width$}", display_key, width = key_width),
-                    key_style,
-                ),
+                Span::styled(pad_end_width(&display_key, row_key_width), key_style),
                 Span::styled(val_prefix, value_style),
                 Span::styled(&field.value, value_style),
             ]);
@@ -365,7 +475,8 @@ pub(super) fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     if field_idx >= tool.fields.len() {
         return;
     }
-    let field = &tool.fields[field_idx];
+    // 弹窗标题只需当前字段一个标签。
+    let field_label = field_title(&tool.fields, field_idx);
 
     let popup_width = ((area.width as f32 * 0.8) as u16).min(area.width.saturating_sub(4));
     let popup_height = 5u16.min(area.height.saturating_sub(4));
@@ -379,15 +490,11 @@ pub(super) fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Edit: ", Style::default().fg(primary())),
-            Span::styled(&field.key, Style::default().fg(text_fg())),
-            Span::styled("  ", Style::default()),
-            Span::styled("Enter", Style::default().fg(primary())),
-            Span::styled(": Save  ", Style::default().fg(muted())),
-            Span::styled("Esc", Style::default().fg(primary())),
-            Span::styled(": Cancel ", Style::default().fg(muted())),
-        ]))
+        .title(Line::from(popup_title_line(
+            " Edit: ",
+            field_label,
+            &[("Enter", "Save"), ("Esc", "Cancel")],
+        )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(primary()))
         .style(Style::default().bg(panel()));
@@ -440,21 +547,25 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     if field_idx >= tool.fields.len() {
         return;
     }
-    let field = &tool.fields[field_idx];
+    // 弹窗标题只需当前字段一个标签。
+    let field_label = field_title(&tool.fields, field_idx);
 
     let option_count = select_options.len() as u16;
     let max_popup_width = area.width.saturating_sub(4);
     let min_popup_width = 60u16.min(max_popup_width);
     let longest_option_width = select_options
         .iter()
-        .map(|opt| opt.chars().count() as u16)
+        .map(|opt| display_width(opt) as u16)
         .max()
         .unwrap_or(0);
     let popup_width = std::cmp::max(
         min_popup_width,
         longest_option_width.saturating_add(6).min(max_popup_width),
     );
-    let popup_height = (option_count + 3).min(area.height.saturating_sub(4));
+    // Popup = borders(2) + filter line(1) + option rows. A floor of 5 keeps
+    // the "No matches" row visible when the filter empties the list: at the
+    // bare 3-row height the list area is 0 rows tall and renders nothing.
+    let popup_height = (option_count + 3).max(5).min(area.height.saturating_sub(4));
     let popup = Rect::new(
         (area.width.saturating_sub(popup_width)) / 2,
         (area.height.saturating_sub(popup_height)) / 2,
@@ -465,17 +576,15 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Select: ", Style::default().fg(primary())),
-            Span::styled(&field.key, Style::default().fg(text_fg())),
-            Span::styled("  ", Style::default()),
-            Span::styled("Enter/Space", Style::default().fg(primary())),
-            Span::styled(": Apply  ", Style::default().fg(muted())),
-            Span::styled("Esc", Style::default().fg(primary())),
-            Span::styled(": Cancel ", Style::default().fg(muted())),
-            Span::styled("Type", Style::default().fg(primary())),
-            Span::styled(": Filter ", Style::default().fg(muted())),
-        ]))
+        .title(Line::from(popup_title_line(
+            " Select: ",
+            field_label,
+            &[
+                ("Enter/Space", "Apply"),
+                ("Esc", "Cancel"),
+                ("Type", "Filter"),
+            ],
+        )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(primary()))
         .style(Style::default().bg(panel()));
@@ -484,9 +593,9 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(block, popup);
 
     let filter_line = if select_filter.is_empty() {
-        "Filter: type to narrow large model lists".to_string()
+        tr("Filter: type to narrow large model lists").into_owned()
     } else {
-        format!("Filter: {select_filter}")
+        format!("{}: {select_filter}", tr("Filter"))
     };
     let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
     frame.render_widget(
@@ -517,6 +626,8 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     marker,
                     Style::default().fg(primary()).add_modifier(Modifier::BOLD),
                 ),
+                // 选项是模型 ID 等用户数据，不是语言包键：原样显示，也和
+                // popup 宽度按原文计算保持同一口径。
                 Span::styled(opt.as_str(), style),
             ]))
         })
@@ -524,7 +635,8 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     if items.is_empty() {
         frame.render_widget(
-            Paragraph::new("No matches").style(Style::default().fg(muted()).bg(panel())),
+            Paragraph::new(tr("No matches").into_owned())
+                .style(Style::default().fg(muted()).bg(panel())),
             list_area,
         );
         return;
@@ -539,7 +651,7 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_main_layout, MainLayoutMode};
+    use super::{resolve_main_layout, tr_summary, visible_labels, FieldEntry, MainLayoutMode};
 
     #[test]
     fn keeps_spacer_in_compact_layout() {
@@ -556,5 +668,43 @@ mod tests {
     fn handles_tiny_terminal_heights() {
         assert_eq!(resolve_main_layout(2, 1), MainLayoutMode::HeaderOnly);
         assert_eq!(resolve_main_layout(3, 1), MainLayoutMode::HeaderAndFooter);
+    }
+
+    /// 树行的 key 是 `Provider ▸ Base URL`：provider 名是用户数据，
+    /// 只有后半段是界面文案。语言包的 key 必须是界面上真正显示的文本，
+    /// 所以这里必须拆开查表，不能拿整串 key 去查。
+    #[test]
+    fn tree_label_uses_the_suffix_and_keeps_the_provider_name_verbatim() {
+        let fields = vec![
+            FieldEntry {
+                key: "Antigravity".to_string(),
+                value: "provider".to_string(),
+                ..Default::default()
+            },
+            FieldEntry {
+                key: "Antigravity ▸ Base URL".to_string(),
+                value: "https://example.test".to_string(),
+                ..Default::default()
+            },
+        ];
+        let labels = visible_labels(&fields);
+        assert_eq!(labels[0], "Antigravity");
+        assert_eq!(labels[1], "↳ Base URL");
+    }
+
+    /// 摘要里的模型名、账号是用户数据，不能进语言包，也不能被翻译。
+    #[test]
+    fn summary_translates_only_the_static_prefix() {
+        assert_eq!(tr_summary("Ready · gpt-5"), "Ready · gpt-5");
+        assert_eq!(tr_summary("someone@example.test"), "someone@example.test");
+    }
+
+    /// 全文摘要（无数据后缀）也要可翻译；此前 "Loading usage..." 只进
+    /// 了 PREFIXES 之外的死角，语言包覆盖不到。
+    #[test]
+    fn summary_translates_whole_string_copy() {
+        assert_eq!(tr_summary("Loading usage..."), "Loading usage...");
+        assert_eq!(tr_summary("Setup failed"), "Setup failed");
+        assert_eq!(tr_summary("Re-auth required"), "Re-auth required");
     }
 }

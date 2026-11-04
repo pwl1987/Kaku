@@ -3,7 +3,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
+use std::borrow::Cow;
+
 use super::{App, Mode};
+use crate::i18n::{display_width, pad_end_width, tr, truncate_width};
+use crate::tui_core::chrome::popup_title_line;
 use crate::tui_core::theme::{accent, bg, muted, panel, primary, text_fg};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,7 +197,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect) {
             Style::default().fg(primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" · ", Style::default().fg(muted())),
-        Span::styled("Settings", Style::default().fg(text_fg())),
+        Span::styled(tr("Settings"), Style::default().fg(text_fg())),
     ]);
     frame.render_widget(Paragraph::new(vec![line, Line::from("")]), area);
 }
@@ -203,7 +207,19 @@ fn render_fields(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_flat: Option<usize> = None;
     let mut flat = 0usize;
-    let key_width = 26usize;
+    // 语言包是进程级只读的，查表结果在帧内不变：每个 key 一帧查一次，
+    // 宽度和行渲染共用同一份结果。
+    let labels: Vec<Cow<'_, str>> = app.fields.iter().map(|field| tr(field.key)).collect();
+    // Dynamic so a translated (usually narrower CJK) label keeps alignment.
+    // Clamped: a runaway translation must not push the value column off
+    // screen, so labels are cut to the column width (the pad alone would
+    // not truncate).
+    let key_width = labels
+        .iter()
+        .map(|label| display_width(label))
+        .max()
+        .unwrap_or(0)
+        .clamp(26, 40);
     let mut current_section: Option<&str> = None;
 
     for (idx, field) in app.fields.iter().enumerate() {
@@ -216,7 +232,7 @@ fn render_fields(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             items.push(ListItem::new(Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(
-                    field.section,
+                    tr(field.section),
                     Style::default().fg(muted()).add_modifier(Modifier::BOLD),
                 ),
             ])));
@@ -229,8 +245,18 @@ fn render_fields(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             selected_flat = Some(flat);
         }
 
+        // Values are persisted to kaku.lua and compared with ==, so the
+        // stored form stays English. Only known option labels render
+        // translated; a raw user value (path, theme name from kaku.lua) is
+        // data, never a pack key, so it is shown verbatim instead of being
+        // looked up (every lookup would miss and pollute the miss log).
         let display_value = app.display_value(field);
         let has_options = field.has_options();
+        let shown_value = if has_options && field.options.iter().any(|o| o == display_value) {
+            tr(display_value)
+        } else {
+            Cow::Borrowed(display_value)
+        };
 
         let key_style = if is_selected {
             Style::default().fg(primary()).add_modifier(Modifier::BOLD)
@@ -279,10 +305,10 @@ fn render_fields(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     }),
             ),
             Span::styled(
-                format!("{:<width$}", field.key, width = key_width),
+                pad_end_width(&truncate_width(&labels[idx], key_width), key_width),
                 key_style,
             ),
-            Span::styled(format!("{}{}", display_value, suffix), value_style),
+            Span::styled(format!("{}{}", shown_value, suffix), value_style),
         ]);
 
         if let Some(note) = override_note {
@@ -326,14 +352,14 @@ fn build_footer_line(
 
     for (idx, action) in actions.iter().enumerate() {
         let label = match label_style {
-            FooterLabelStyle::Long => action.long_label,
-            FooterLabelStyle::Short => action.short_label,
+            FooterLabelStyle::Long => tr(action.long_label),
+            FooterLabelStyle::Short => tr(action.short_label),
         };
-        let segment_width = action.key.chars().count() + 1 + label.chars().count();
+        let segment_width = display_width(action.key) + 1 + display_width(&label);
         let separator_width = if idx == 0 {
             0
         } else {
-            separator.chars().count()
+            display_width(separator)
         };
 
         if used_width + separator_width + segment_width > max_width {
@@ -361,6 +387,8 @@ fn build_footer_line(
         spans.push(Span::styled(action.key, Style::default().fg(primary())));
     }
 
+    // `label` comes from tr() on a &'static str, so every span here is
+    // already Span<'static>; no re-owning pass is needed.
     Line::from(spans)
 }
 
@@ -375,7 +403,7 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let longest_option_width = field
         .options
         .iter()
-        .map(|opt| opt.chars().count() as u16)
+        .map(|opt| display_width(&tr(opt)) as u16)
         .max()
         .unwrap_or(0);
     let popup_width = std::cmp::max(
@@ -392,12 +420,11 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     frame.render_widget(Clear, popup);
 
+    // 标题末尾保留一个空格，和改动前的标题渲染保持一致
+    let mut title = popup_title_line(" Select: ", tr(field.key), &[]);
+    title.push(Span::styled(" ", Style::default()));
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Select: ", Style::default().fg(primary())),
-            Span::styled(field.key, Style::default().fg(text_fg())),
-            Span::styled(" ", Style::default()),
-        ]))
+        .title(Line::from(title))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(primary()))
         .style(Style::default().bg(panel()));
@@ -428,7 +455,7 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                             Modifier::empty()
                         }),
                 ),
-                Span::styled(opt.clone(), style),
+                Span::styled(tr(opt).into_owned(), style),
             ]))
         })
         .collect();
@@ -457,15 +484,11 @@ fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Edit: ", Style::default().fg(primary())),
-            Span::styled(field.key, Style::default().fg(text_fg())),
-            Span::styled("  ", Style::default()),
-            Span::styled("Enter", Style::default().fg(primary())),
-            Span::styled(": Save  ", Style::default().fg(muted())),
-            Span::styled("Esc", Style::default().fg(primary())),
-            Span::styled(": Cancel ", Style::default().fg(muted())),
-        ]))
+        .title(Line::from(popup_title_line(
+            " Edit: ",
+            tr(field.key),
+            &[("Enter", "Save"), ("Esc", "Cancel")],
+        )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(primary()))
         .style(Style::default().bg(panel()));
