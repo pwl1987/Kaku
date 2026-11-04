@@ -2793,6 +2793,12 @@ mod test {
 
     #[test]
     fn split_notifies_after_layout_is_updated() {
+        // 本测试改 global mux（split 的通知走 Mux::get()），
+        // 必须和别的测试串行。
+        let _serial = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         let size = TerminalSize {
             rows: 24,
             cols: 80,

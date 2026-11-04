@@ -291,6 +291,15 @@ mod tests {
         }
     }
 
+    /// 还原全局 config，别把测试用的开关留给别的测试。
+    struct ResetConfig;
+
+    impl Drop for ResetConfig {
+        fn drop(&mut self) {
+            config::use_default_configuration();
+        }
+    }
+
     fn window_with_tabs(count: usize) -> (Window, Vec<Arc<Tab>>) {
         let size = TerminalSize {
             rows: 24,
@@ -314,9 +323,15 @@ mod tests {
     /// the closed tab down by one.
     #[test]
     fn closing_active_tab_activates_last_active_tab() {
+        // 本测试改 global config 和 global mux，必须和别的测试串行。
+        let _serial = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         let mut cfg = config::Config::default_config();
         cfg.switch_to_last_active_tab_when_closing_tab = true;
         config::use_this_configuration(cfg);
+        let _reset_config = ResetConfig;
 
         let mux = Arc::new(Mux::new(None));
         Mux::set_mux(&mux);
