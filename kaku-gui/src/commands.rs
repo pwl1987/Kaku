@@ -848,7 +848,21 @@ impl CommandDef {
                 let rank = command_rank_for_menu(title, &cmd.action);
                 let group = separator_group_for_menu(title, rank);
 
-                let mut submenu = main_menu.get_or_create_sub_menu(&cmd.menubar[0], |menu| {
+                // Translate BEFORE creating the submenu: for a top-level
+                // item the menu bar draws the label set at creation time and
+                // ignores later setTitle: on both the item and the NSMenu
+                // (observed on macOS 26). The translated title is the same on
+                // every build, so the lookup stays consistent; a locale switch
+                // needs an app restart anyway (pack loads once per process).
+                let display_title = if cmd.menubar[0] == "Kaku" {
+                    // The App menu is the product name: stay English even if
+                    // a pack entry exists.
+                    Cow::Borrowed(cmd.menubar[0])
+                } else {
+                    kaku::i18n::tr(cmd.menubar[0])
+                };
+
+                let mut submenu = main_menu.get_or_create_sub_menu(&display_title, |menu| {
                     // Do not call setWindowsMenu: / setHelpMenu: on our
                     // submenus: on macOS 26, AppKit inserts auto-managed
                     // items (Tile/Move & Resize/Bring All to Front; Help
@@ -887,8 +901,11 @@ impl CommandDef {
                             let delegate: cocoa::base::id = msg_send![app, delegate];
                             delegate
                         };
-                        let settings_item =
-                            MenuItem::new_with("Settings...", Some(show_settings_window_sel), ",");
+                        let settings_item = MenuItem::new_with(
+                            &kaku::i18n::tr("Settings..."),
+                            Some(show_settings_window_sel),
+                            ",",
+                        );
                         settings_item
                             .set_key_equiv_modifier_mask(NSEventModifierFlags::NSCommandKeyMask);
                         if !app_delegate.is_null() {
@@ -897,7 +914,7 @@ impl CommandDef {
                         insert_owned(menu, &settings_item, &mut next_index);
 
                         let check_update = MenuItem::new_with(
-                            "Check for Updates...",
+                            &kaku::i18n::tr("Check for Updates..."),
                             Some(kaku_perform_key_assignment_sel),
                             "",
                         );
@@ -910,7 +927,7 @@ impl CommandDef {
                         if let Some(info) = crate::update::staged_update_available() {
                             let version = info.tag.trim_start_matches(['v', 'V']);
                             let restart_item = MenuItem::new_with(
-                                &format!("Restart to Update ({})", version),
+                                &kaku::i18n::trf("Restart to Update ({})", &[&version]),
                                 Some(kaku_perform_key_assignment_sel),
                                 "",
                             );
@@ -921,7 +938,7 @@ impl CommandDef {
                         }
 
                         let set_default_terminal_item = MenuItem::new_with(
-                            "Set as Default Terminal",
+                            &kaku::i18n::tr("Set as Default Terminal"),
                             Some(kaku_perform_key_assignment_sel),
                             "",
                         );
@@ -938,7 +955,7 @@ impl CommandDef {
                         // macOS never asks again once notifications are denied,
                         // so give the switch a place people can find.
                         let notification_settings_item = MenuItem::new_with(
-                            "Notification Settings...",
+                            &kaku::i18n::tr("Notification Settings..."),
                             Some(kaku_perform_key_assignment_sel),
                             "",
                         );
@@ -1022,7 +1039,7 @@ impl CommandDef {
                     .unwrap_or_else(String::new);
 
                 let item = MenuItem::new_with(
-                    &cmd.brief,
+                    &kaku::i18n::tr(&cmd.brief),
                     Some(kaku_perform_key_assignment_sel),
                     &short_cut,
                 );

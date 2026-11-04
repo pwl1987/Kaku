@@ -12,6 +12,7 @@ mod responses;
 mod think_filter;
 mod transport;
 
+pub(crate) use assistant_config::assistant_toml_path;
 pub use assistant_config::{ApiMode, AssistantConfig};
 pub(crate) use transport::build_client_with_proxy;
 

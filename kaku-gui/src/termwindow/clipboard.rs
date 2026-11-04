@@ -40,10 +40,9 @@ fn should_emit_ai_notice(kind: &str, message: &str) -> bool {
 }
 
 fn is_ai_progress_toast(message: &str) -> bool {
-    matches!(
-        message,
-        "Kaku Assistant analyzing command" | "Kaku generating command"
-    )
+    let translated = kaku::i18n::tr("Kaku Assistant analyzing command");
+    let generating = kaku::i18n::tr("Kaku generating command");
+    message == translated.as_ref() || message == generating.as_ref()
 }
 
 impl TermWindow {
@@ -325,5 +324,14 @@ mod tests {
         assert!(is_ai_progress_toast("Kaku generating command"));
         assert!(!is_ai_progress_toast("Kaku Assistant is not configured"));
         assert!(!is_ai_progress_toast("Copied"));
+    }
+
+    /// clear_ai_progress_toast() compares against the toast text, which the
+    /// EmitEvent handler translates before storing; the matcher must accept
+    /// the translated form too or the progress toast outlives its clear.
+    #[test]
+    fn translated_progress_toasts_are_clearable() {
+        let translated = kaku::i18n::tr("Kaku Assistant analyzing command");
+        assert!(is_ai_progress_toast(translated.as_ref()));
     }
 }

@@ -319,11 +319,22 @@ fn expand_tilde(s: &str) -> String {
     s.to_string()
 }
 
-fn assistant_toml_path() -> Result<PathBuf> {
+pub(crate) fn assistant_toml_path() -> Result<PathBuf> {
+    // Test escape hatch, mirroring kaku/src/assistant_config.rs: the default
+    // path resolves through config::user_config_path(), which prefers
+    // XDG_CONFIG_HOME over $HOME and inherits both from the launching shell,
+    // so a scratch-environment test instance can touch the real
+    // ~/.config/kaku/assistant.toml.
+    if let Some(path) = std::env::var_os("KAKU_ASSISTANT_TOML") {
+        let trimmed = path.to_string_lossy().trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(expand_tilde(&trimmed)));
+        }
+    }
     let user_config_path = config::user_config_path();
-    let config_dir = user_config_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("invalid user config path"))?;
+    let config_dir = user_config_path.parent().ok_or_else(|| {
+        anyhow::anyhow!("invalid user config path: {}", user_config_path.display())
+    })?;
     Ok(config_dir.join("assistant.toml"))
 }
 

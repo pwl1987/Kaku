@@ -12,10 +12,12 @@ use config::keyassignment::{
     SpawnTabDomain,
 };
 use config::{MouseEventAltScreen, SelectionWheelScrollBehavior};
+use kaku::i18n::tr;
 use mux::pane::{CachePolicy, Pane, WithPaneLines};
 use mux::tab::SplitDirection;
 use mux::Mux;
 use mux_lua::MuxPane;
+use std::borrow::Cow;
 use std::convert::TryInto;
 use std::ops::Sub;
 use std::rc::Rc;
@@ -61,7 +63,7 @@ fn should_show_terminal_context_menu(
         && (!mouse_grabbed || modifiers.contains(bypass_modifiers))
 }
 
-fn terminal_context_menu_actions(has_selection: bool) -> Vec<(&'static str, KeyAssignment)> {
+fn terminal_context_menu_actions(has_selection: bool) -> Vec<(Cow<'static, str>, KeyAssignment)> {
     let split = |direction| {
         KeyAssignment::SplitPane(config::keyassignment::SplitPane {
             direction,
@@ -76,44 +78,47 @@ fn terminal_context_menu_actions(has_selection: bool) -> Vec<(&'static str, KeyA
     // copy_on_select still have a mouse path to the clipboard (#558).
     if has_selection {
         actions.push((
-            "Copy",
+            tr("Copy"),
             KeyAssignment::CopyTo(ClipboardCopyDestination::Clipboard),
         ));
     }
     actions.extend([
         (
-            "Paste",
+            tr("Paste"),
             KeyAssignment::PasteFrom(ClipboardPasteSource::Clipboard),
         ),
-        ("Search", KeyAssignment::Search(Pattern::default())),
+        (tr("Search"), KeyAssignment::Search(Pattern::default())),
         (
-            "AI Chat",
+            tr("AI Chat"),
             KeyAssignment::EmitEvent("kaku-ai-chat".to_string()),
         ),
-        ("Command Palette", KeyAssignment::ActivateCommandPalette),
+        (tr("Command Palette"), KeyAssignment::ActivateCommandPalette),
         (
-            "Split Left",
+            tr("Split Left"),
             split(config::keyassignment::PaneDirection::Left),
         ),
         (
-            "Split Right",
+            tr("Split Right"),
             split(config::keyassignment::PaneDirection::Right),
         ),
-        ("Split Up", split(config::keyassignment::PaneDirection::Up)),
         (
-            "Split Down",
+            tr("Split Up"),
+            split(config::keyassignment::PaneDirection::Up),
+        ),
+        (
+            tr("Split Down"),
             split(config::keyassignment::PaneDirection::Down),
         ),
         (
-            "New Tab",
+            tr("New Tab"),
             KeyAssignment::SpawnTab(SpawnTabDomain::CurrentPaneDomain),
         ),
         (
-            "Close Pane",
+            tr("Close Pane"),
             KeyAssignment::CloseCurrentPane { confirm: false },
         ),
         (
-            "Close Tab",
+            tr("Close Tab"),
             KeyAssignment::CloseCurrentTab { confirm: false },
         ),
     ]);
@@ -125,15 +130,15 @@ fn terminal_context_menu_actions(has_selection: bool) -> Vec<(&'static str, KeyA
 /// remote desktop do not have. Picking Close from a context menu (a right
 /// click or a long press) is already a deliberate choice, so the close items
 /// here and in the terminal menu skip the running-process confirmation.
-fn tab_context_menu_actions() -> [(&'static str, KeyAssignment); 3] {
+fn tab_context_menu_actions() -> [(Cow<'static, str>, KeyAssignment); 3] {
     [
         (
-            "New Tab",
+            tr("New Tab"),
             KeyAssignment::SpawnTab(SpawnTabDomain::CurrentPaneDomain),
         ),
-        ("Tab Navigator", KeyAssignment::ShowTabNavigator),
+        (tr("Tab Navigator"), KeyAssignment::ShowTabNavigator),
         (
-            "Close Tab",
+            tr("Close Tab"),
             KeyAssignment::CloseCurrentTab { confirm: false },
         ),
     ]
@@ -1559,7 +1564,7 @@ impl super::TermWindow {
                     if matches!(action, KeyAssignment::CloseCurrentTab { .. }) {
                         menu.add_item(&MenuItem::new_separator());
                     }
-                    menu.add_item(&pane_action_menu_item(title, action, pane_id));
+                    menu.add_item(&pane_action_menu_item(&title, action, pane_id));
                 }
                 self.size_menu_for_touch(&menu);
                 context.show_context_menu(menu, event.screen_coords);
@@ -2457,7 +2462,7 @@ impl super::TermWindow {
                             !self.selection(mux::pane::PaneId::new(pane_id)).is_empty();
                         let menu = Menu::new_with_title("");
                         for (title, action) in terminal_context_menu_actions(has_selection) {
-                            menu.add_item(&pane_action_menu_item(title, action, pane_id));
+                            menu.add_item(&pane_action_menu_item(&title, action, pane_id));
                         }
                         self.size_menu_for_touch(&menu);
                         context.show_context_menu(menu, event.screen_coords);
@@ -3149,17 +3154,30 @@ mod tests {
         let new_tab = KeyAssignment::SpawnTab(SpawnTabDomain::CurrentPaneDomain);
         let close_tab = KeyAssignment::CloseCurrentTab { confirm: false };
         let terminal = terminal_context_menu_actions(false);
-        assert!(terminal.contains(&("New Tab", new_tab.clone())));
-        assert!(terminal.contains(&("Close Tab", close_tab.clone())));
+        assert!(terminal
+            .iter()
+            .any(|(title, action)| *action == new_tab && title == "New Tab"));
+        assert!(terminal
+            .iter()
+            .any(|(title, action)| *action == close_tab && title == "Close Tab"));
 
         let tab = tab_context_menu_actions();
         assert_eq!(
-            tab.iter().map(|(title, _)| *title).collect::<Vec<_>>(),
+            tab.iter()
+                .map(|(title, _)| title.to_string())
+                .collect::<Vec<_>>(),
             ["New Tab", "Tab Navigator", "Close Tab"]
         );
-        assert!(tab.contains(&("New Tab", new_tab)));
-        assert!(tab.contains(&("Tab Navigator", KeyAssignment::ShowTabNavigator)));
-        assert!(tab.contains(&("Close Tab", close_tab)));
+        assert!(tab
+            .iter()
+            .any(|(title, action)| *action == new_tab && title == "New Tab"));
+        assert!(tab
+            .iter()
+            .any(|(title, action)| *action == KeyAssignment::ShowTabNavigator
+                && title == "Tab Navigator"));
+        assert!(tab
+            .iter()
+            .any(|(title, action)| *action == close_tab && title == "Close Tab"));
     }
 
     #[test]
@@ -3207,7 +3225,10 @@ mod tests {
     fn context_menu_offers_copy_only_with_selection() {
         let copy = KeyAssignment::CopyTo(ClipboardCopyDestination::Clipboard);
         let with_selection = terminal_context_menu_actions(true);
-        assert_eq!(with_selection.first(), Some(&("Copy", copy.clone())));
+        assert!(matches!(
+            with_selection.first(),
+            Some((title, action)) if *action == copy && title == "Copy"
+        ));
         assert!(!terminal_context_menu_actions(false)
             .iter()
             .any(|(_, action)| *action == copy));

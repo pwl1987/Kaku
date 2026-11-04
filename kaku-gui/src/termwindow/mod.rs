@@ -42,6 +42,7 @@ use config::{
     configuration, AudibleBell, ConfigHandle, Dimension, DimensionContext, FrontEndSelection,
     GeometryOrigin, GuiPosition, NotificationHandling, TermConfig, WindowCloseConfirmation,
 };
+use kaku::i18n::tr;
 use lfucache::*;
 use mlua::{FromLua, LuaSerdeExt, UserData, UserDataFields};
 use mux::pane::{
@@ -5089,19 +5090,24 @@ impl TermWindow {
                     let result = pane.writer().write_all(command.as_bytes());
                     self.finish_terminal_input(pane, result)?;
                 } else if let Some(msg) = lookup_kaku_toast(name) {
-                    self.show_toast(msg.to_string());
+                    // Overlay language pack: toasts are pure display text.
+                    self.show_toast(tr(msg).into_owned());
                 } else if name == "kaku-toast-ai-analyzing" {
-                    let message = "Kaku Assistant analyzing command";
-                    self.show_ai_progress_toast(message.to_string(), ai_toast_lifetime_ms(message));
+                    let message = tr("Kaku Assistant analyzing command").into_owned();
+                    let lifetime = ai_toast_lifetime_ms(&message);
+                    self.show_ai_progress_toast(message, lifetime);
                 } else if name == "kaku-toast-ai-generating" {
-                    let message = "Kaku generating command";
-                    self.show_ai_progress_toast(message.to_string(), ai_toast_lifetime_ms(message));
+                    let message = tr("Kaku generating command").into_owned();
+                    let lifetime = ai_toast_lifetime_ms(&message);
+                    self.show_ai_progress_toast(message, lifetime);
                 } else if name == "kaku-toast-ai-clear-progress" {
                     self.clear_ai_progress_toast();
                 } else if name == "kaku-toast-ai-applied" {
                     // No notification on successful apply; command output is enough.
                 } else if let Some(msg) = lookup_ai_toast(name) {
-                    self.show_ai_result_notice(msg.to_string(), ai_toast_lifetime_ms(msg));
+                    let message = tr(msg).into_owned();
+                    let lifetime = ai_toast_lifetime_ms(&message);
+                    self.show_ai_result_notice(message, lifetime);
                 } else if let Some(payload) = name.strip_prefix("kaku-toast-ai-") {
                     if let Some(message) = decode_hex_event_payload(payload) {
                         let lifetime = ai_toast_lifetime_ms(&message);
@@ -5113,18 +5119,20 @@ impl TermWindow {
                     match Connection::get() {
                         Some(conn) => match conn.set_default_terminal() {
                             Ok(()) => {
-                                self.show_toast("Kaku is now the default terminal".to_string());
+                                self.show_toast(
+                                    tr("Kaku is now the default terminal").into_owned(),
+                                );
                             }
                             Err(err) => {
                                 log::error!("Failed to set Kaku as default terminal: {err:#}");
-                                self.show_toast("Failed to set default terminal".to_string());
+                                self.show_toast(tr("Failed to set default terminal").into_owned());
                             }
                         },
                         None => {
                             log::error!(
                                 "Cannot set default terminal because no GUI connection is available"
                             );
-                            self.show_toast("Failed to set default terminal".to_string());
+                            self.show_toast(tr("Failed to set default terminal").into_owned());
                         }
                     }
                 } else {

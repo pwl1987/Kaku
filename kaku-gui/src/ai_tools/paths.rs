@@ -105,6 +105,19 @@ fn blocked_locations() -> Vec<PathBuf> {
         blocked.push(config_dir.join("assistant.toml"));
         blocked.push(config_dir.join("secrets"));
     }
+    // The KAKU_ASSISTANT_TOML override moves the real api_key file, so the
+    // default-config-dir entries above no longer point at it. Block the
+    // resolved path too (canon_path normalizes best-effort). Resolved through
+    // the same loader helper the GUI config reader uses, so the blocked path
+    // always matches the file the override actually points at. Without an
+    // override the resolved path is the config-dir entry already pushed
+    // above; skip the duplicate (each entry costs a canonicalize in
+    // reject_if_sensitive).
+    if let Ok(assistant_toml) = crate::ai_client::assistant_toml_path() {
+        if !blocked.contains(&assistant_toml) {
+            blocked.push(assistant_toml);
+        }
+    }
     blocked
 }
 

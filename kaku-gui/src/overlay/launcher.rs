@@ -321,7 +321,8 @@ impl LauncherState {
                     continue;
                 }
                 self.entries.push(Entry {
-                    label: cmd.brief.to_string(),
+                    // Display text only; the label is not persisted anywhere.
+                    label: kaku::i18n::tr(&cmd.brief).into_owned(),
                     action: cmd.action.into(),
                 });
             }
@@ -369,7 +370,7 @@ impl LauncherState {
                 }
 
                 let label = match derive_command_from_key_assignment(&entry.action) {
-                    Some(cmd) => cmd.brief.to_string(),
+                    Some(cmd) => kaku::i18n::tr(&cmd.brief).into_owned(),
                     None => format!(
                         "{:?} ({} {})",
                         entry.action,

@@ -842,6 +842,11 @@ impl GuiFrontEnd {
         refresh_fast_config_snapshot();
         startup_trace::mark("    refresh_fast_config_snapshot done");
 
+        // Overlay language pack: load once per process, before the first
+        // menubar build so translated labels land on the first paint.
+        kaku::i18n::load();
+        startup_trace::mark("    i18n::load done");
+
         // Build the initial menubar synchronously so AppKit has its menu
         // hierarchy established before key events arrive. On macOS 26,
         // deferring this causes routeKeyEquivalent to swallow arrow keys
@@ -2161,7 +2166,7 @@ mod tests {
             .next()
             .expect("commands production source");
         let item = commands
-            .split("\"Notification Settings...\",")
+            .split("kaku::i18n::tr(\"Notification Settings...\"),")
             .nth(1)
             .expect("Notification Settings menu item");
         assert!(item.contains(

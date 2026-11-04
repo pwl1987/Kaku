@@ -339,6 +339,10 @@ impl CommandPalette {
         key_display
     }
 
+    /// Search text per command. The English `brief` stays (it is the user's
+    /// persistent identity for the command and what the recents file keys
+    /// on); the overlay translation, when present, is appended so searching
+    /// in the translated language also matches.
     fn build_search_index(commands: &[ExpandedCommand]) -> Vec<String> {
         commands
             .iter()
@@ -353,6 +357,11 @@ impl CommandPalette {
                     text.push(' ');
                 }
                 text.push_str(&cmd.brief);
+                let translated = kaku::i18n::tr(&cmd.brief);
+                if &*translated != &*cmd.brief {
+                    text.push(' ');
+                    text.push_str(&translated);
+                }
                 if !cmd.doc.is_empty() {
                     text.push_str(". ");
                     text.push_str(&cmd.doc);
@@ -678,12 +687,14 @@ impl CommandPalette {
                 LinearRgba::TRANSPARENT.into()
             };
 
+            // Display text only: `brief` itself is the frecency identity key
+            // and stays English on disk and in comparisons.
             let label = command
                 .icon
                 .as_deref()
                 .filter(|icon| !icon.is_empty())
-                .map(|icon| format!("{icon} {}", command.brief))
-                .unwrap_or_else(|| command.brief.to_string());
+                .map(|icon| format!("{icon} {}", kaku::i18n::tr(&command.brief)))
+                .unwrap_or_else(|| kaku::i18n::tr(&command.brief).into_owned());
 
             // Build row with better spacing
             let mut row = vec![Element::new(
