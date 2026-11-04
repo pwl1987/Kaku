@@ -6024,11 +6024,23 @@ mod tests {
         let drawer = NSRect::new(NSPoint::new(0., 655.), NSSize::new(1512., 327.));
         // A monitor above the laptop, as in the report: the slide crosses it.
         let above = NSRect::new(NSPoint::new(-200., 982.), NSSize::new(2560., 1440.));
-        assert!(hotkey_slide_crosses_another_screen(drawer, laptop, &[laptop, above]));
+        assert!(hotkey_slide_crosses_another_screen(
+            drawer,
+            laptop,
+            &[laptop, above]
+        ));
         // Side by side, or alone: keep sliding.
         let beside = NSRect::new(NSPoint::new(1512., 0.), NSSize::new(2560., 1440.));
-        assert!(!hotkey_slide_crosses_another_screen(drawer, laptop, &[laptop, beside]));
-        assert!(!hotkey_slide_crosses_another_screen(drawer, laptop, &[laptop]));
+        assert!(!hotkey_slide_crosses_another_screen(
+            drawer,
+            laptop,
+            &[laptop, beside]
+        ));
+        assert!(!hotkey_slide_crosses_another_screen(
+            drawer,
+            laptop,
+            &[laptop]
+        ));
 
         assert_eq!(hotkey_height_percent_from(491., 982.), Some(50.));
         assert_eq!(hotkey_height_percent_from(20., 982.), Some(10.));
@@ -8314,7 +8326,11 @@ impl WindowView {
         0
     }
 
-    extern "C" fn accessibility_frame_for_range(this: &Object, _sel: Sel, range: NSRange) -> NSRect {
+    extern "C" fn accessibility_frame_for_range(
+        this: &Object,
+        _sel: Sel,
+        range: NSRange,
+    ) -> NSRect {
         let rect = Self::caret_screen_rect(this);
         log::trace!(
             "ax: accessibilityFrameForRange {:?} -> ({}, {}) {}x{}",
@@ -8333,7 +8349,10 @@ impl WindowView {
     fn post_focused_element_changed(view: id) {
         log::trace!("ax: post AXFocusedUIElementChanged");
         unsafe {
-            NSAccessibilityPostNotification(view, NSAccessibilityFocusedUIElementChangedNotification);
+            NSAccessibilityPostNotification(
+                view,
+                NSAccessibilityFocusedUIElementChangedNotification,
+            );
         }
     }
 
@@ -9514,10 +9533,9 @@ impl WindowView {
                     let window = window.load();
                     let frame = unsafe { NSWindow::frame(*window) };
                     if let Some(screen) = screen_geometry_for_window(*window) {
-                        if let Some(percent) = hotkey_height_percent_from(
-                            frame.size.height,
-                            screen.frame.size.height,
-                        ) {
+                        if let Some(percent) =
+                            hotkey_height_percent_from(frame.size.height, screen.frame.size.height)
+                        {
                             this.hotkey_height_percent.set(Some(percent));
                         }
                     }
@@ -10348,7 +10366,8 @@ impl WindowView {
             );
             cls.add_method(
                 sel!(accessibilityNumberOfCharacters),
-                Self::accessibility_number_of_characters as extern "C" fn(&Object, Sel) -> NSInteger,
+                Self::accessibility_number_of_characters
+                    as extern "C" fn(&Object, Sel) -> NSInteger,
             );
             cls.add_method(
                 sel!(accessibilitySelectedTextRange),
@@ -10366,7 +10385,8 @@ impl WindowView {
             );
             cls.add_method(
                 sel!(accessibilityFrameForRange:),
-                Self::accessibility_frame_for_range as extern "C" fn(&Object, Sel, NSRange) -> NSRect,
+                Self::accessibility_frame_for_range
+                    as extern "C" fn(&Object, Sel, NSRange) -> NSRect,
             );
         }
 

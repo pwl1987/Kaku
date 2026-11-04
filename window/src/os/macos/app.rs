@@ -651,7 +651,10 @@ extern "C" fn application_should_terminate(
     _app: *mut Object,
 ) -> u64 {
     if quit_is_system_session_end() {
-        return terminate_now(QuitOrigin::AppKitShouldTerminate, Some("system-session-end"));
+        return terminate_now(
+            QuitOrigin::AppKitShouldTerminate,
+            Some("system-session-end"),
+        );
     }
     unsafe {
         match config::configuration().window_close_confirmation {
