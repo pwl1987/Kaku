@@ -36,17 +36,18 @@ pub fn key_hint_spans(hints: &[(&str, &str)]) -> Vec<Span<'static>> {
 /// A popup title line: `prefix` + the subject + hints, with the
 /// double-space separators the TUIs use.
 ///
-/// The subject is the final display text: callers translate it themselves
-/// (`tr` for a static label, the tool's own visible label for a field
-/// whose key mixes data and copy). Translating it here would look up an
-/// already-translated string a second time.
+/// Prefix and hint labels are looked up in the overlay pack here (callers
+/// pass English literals). The subject is the final display text: callers
+/// translate it themselves (`tr` for a static label, the tool's own
+/// visible label for a field whose key mixes data and copy). Translating
+/// it here would look up an already-translated string a second time.
 pub fn popup_title_line(
     prefix: &str,
     subject: impl Into<String>,
     hints: &[(&str, &str)],
 ) -> Vec<Span<'static>> {
     let mut spans = vec![
-        Span::styled(prefix.to_string(), Style::default().fg(primary())),
+        Span::styled(tr(prefix).into_owned(), Style::default().fg(primary())),
         Span::styled(subject.into(), Style::default().fg(text_fg())),
     ];
     if !hints.is_empty() {
