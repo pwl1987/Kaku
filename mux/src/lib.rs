@@ -151,6 +151,12 @@ static SUB_ID: AtomicUsize = AtomicUsize::new(0);
 pub struct Mux {
     tabs: RwLock<HashMap<TabId, Arc<Tab>>>,
     panes: RwLock<HashMap<PaneId, Arc<dyn Pane>>>,
+    /// 读路径一律用 read_recursive()。
+    ///
+    /// GUI 会持有窗口读锁再调 mux 的窗口 API（配置重载、标题刷新等）。
+    /// parking_lot 的公平策略下，有写者排队时新读者要排队，于是调用方等
+    /// 写者、写者等调用方放锁 —— 互等死锁。递归读允许同线程在写者排队时
+    /// 再取一次读锁，这一类死锁就不成立（见 docs/incidents.md K-27）。
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
     domains: RwLock<HashMap<DomainId, Arc<dyn Domain>>>,
@@ -787,6 +793,14 @@ lazy_static::lazy_static! {
     static ref MUX: Mutex<Option<Arc<Mux>>> = Mutex::new(None);
 }
 
+/// 进程级全局状态的测试锁。
+///
+/// global mux（`Mux::set_mux`）和 global config（`config::use_this_configuration`）
+/// 是进程里唯一的单例，改它们的测试必须串行，否则并行测试互相覆盖，
+/// 表现为偶发失败（同样的代码单独跑总是过）。
+#[cfg(test)]
+pub(crate) static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct MuxWindowBuilder {
     window_id: WindowId,
     activity: Option<Activity>,
@@ -894,7 +908,7 @@ impl Mux {
 
     fn recompute_pane_count(&self) {
         let mut count = HashMap::new();
-        for window in self.windows.read().values() {
+        for window in self.windows.read_recursive().values() {
             let workspace = window.get_workspace();
             for tab in window.iter() {
                 *count.entry(workspace.to_string()).or_insert(0) += match tab.count_panes() {
@@ -1424,7 +1438,7 @@ impl Mux {
     }
 
     pub fn get_window(&self, window_id: WindowId) -> Option<MappedRwLockReadGuard<'_, Window>> {
-        let guard = self.windows.read();
+        let guard = self.windows.read_recursive();
         if !guard.contains_key(&window_id) {
             return None;
         }
@@ -1440,7 +1454,7 @@ impl Mux {
         // Use a read guard first to check existence, then upgrade to write lock.
         // Re-check inside the write lock to avoid a TOCTOU race where the window
         // is removed between the read check and the write lock acquisition.
-        if !self.windows.read().contains_key(&window_id) {
+        if !self.windows.read_recursive().contains_key(&window_id) {
             return None;
         }
         let guard = self.windows.write();
@@ -1455,15 +1469,6 @@ impl Mux {
     pub fn get_active_tab_for_window(&self, window_id: WindowId) -> Option<Arc<Tab>> {
         let window = self.get_window(window_id)?;
         window.get_active().map(Arc::clone)
-    }
-
-    /// 窗口里的 tab 数量。
-    ///
-    /// 不像 get_window 那样把读锁交给调用方：调用方后面还要再取 mux 的
-    /// 读锁，锁内套锁会在有写者排队时死锁（parking_lot 的公平策略）。
-    pub fn window_tab_count(&self, window_id: WindowId) -> Option<usize> {
-        let guard = self.windows.read();
-        guard.get(&window_id).map(|w| w.len())
     }
 
     pub fn new_empty_window(
@@ -1495,7 +1500,7 @@ impl Mux {
     }
 
     pub fn window_containing_tab(&self, tab_id: TabId) -> Option<WindowId> {
-        for w in self.windows.read().values() {
+        for w in self.windows.read_recursive().values() {
             for t in w.iter() {
                 if t.tab_id() == tab_id {
                     return Some(w.window_id());
@@ -1550,7 +1555,7 @@ impl Mux {
     }
 
     pub fn iter_windows(&self) -> Vec<WindowId> {
-        self.windows.read().keys().cloned().collect()
+        self.windows.read_recursive().keys().cloned().collect()
     }
 
     pub fn iter_domains(&self) -> Vec<Arc<dyn Domain>> {
@@ -1581,17 +1586,19 @@ impl Mux {
         }
 
         // 只取读锁：kill_panes_in_domain 和 Window::iter 都是 &self，写操作在
-        // Tab 自己的 inner Mutex 里。此函数在 PTY 解析线程上运行，若取写锁，
-        // 它会等 GUI 主线程手里的窗口读锁清零；而 GUI 主线程若在持锁期间
-        // 再取一次读锁（锁内套锁），两边互等，整个 Kaku 卡死。
-        // tmux -CC 立即退出即触发：PTY 线程走这里，GUI 主线程同时在刷标题。
-        {
-            let windows = self.windows.read();
-            for win in windows.values() {
-                for tab in win.iter() {
-                    tab.kill_panes_in_domain(domain);
-                }
-            }
+        // Tab 自己的 inner Mutex 里。此函数在 PTY 解析线程上运行，取写锁会
+        // 和 GUI 主线程手里的读锁互等（tmux -CC 立即退出即触发）。
+        // 锁内只快照 tab 列表：kill 会在 Tab 内部做 pane.resize() 之类的 IO，
+        // 不该占着 windows 的锁。
+        let tabs: Vec<Arc<Tab>> = {
+            let windows = self.windows.read_recursive();
+            windows
+                .values()
+                .flat_map(|win| win.iter().cloned())
+                .collect()
+        };
+        for tab in tabs {
+            tab.kill_panes_in_domain(domain);
         }
 
         log::info!("domain detached panes: {:?}", dead_panes);
@@ -1978,7 +1985,7 @@ impl wezterm_term::DownloadHandler for MuxDownloader {
 
 #[cfg(test)]
 mod tests {
-    use super::SynchronizedOutputState;
+    use super::{Arc, DomainId, Mux, SynchronizedOutputState, Window};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -2045,9 +2052,6 @@ mod tests {
     /// 这个组合：GUI 主线程持窗口读锁，PTY 线程走 domain_was_detached。
     #[test]
     fn detach_under_window_read_lock_does_not_deadlock() {
-        use super::{DomainId, Mux, Window};
-        use std::sync::Arc;
-
         let mux = Arc::new(Mux::new(None));
         // 直接塞一个空窗口，不走 new_empty_window：那会碰全局 Mux，
         // 并行跑测试时会互相干扰。
@@ -2057,16 +2061,64 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mux2 = Arc::clone(&mux);
-        let worker = std::thread::spawn(move || {
+        let _worker = std::thread::spawn(move || {
             let _guard = mux2.get_window(window_id);
             mux2.domain_was_detached(DomainId::new(9999));
             let _ = tx.send(());
         });
 
+        let ok = rx.recv_timeout(Duration::from_secs(5)).is_ok();
         assert!(
-            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            ok,
             "domain_was_detached 在调用方持有窗口读锁时死锁（它只能取读锁）"
         );
-        let _ = worker;
+        if ok {
+            // 成功才 join：失败时 worker 还卡在锁里，join 会把测试挂死。
+            _worker.join().unwrap();
+        }
+    }
+
+    /// 调用方持有 windows 读锁时，mux 的窗口 API 必须能返回。
+    ///
+    /// GUI 会在持有窗口读锁的期间调 mux 的窗口 API（配置重载、标题刷新）。
+    /// 旧实现里这些 API 自己再取一次读锁，有写者排队时 parking_lot 挡住
+    /// 新读者：调用方等写者、写者等调用方放锁，互等死锁。
+    #[test]
+    fn window_apis_return_while_the_caller_holds_a_read_guard() {
+        let mux = Arc::new(Mux::new(None));
+        let window = Window::new(Some("default".to_string()), None);
+        let window_id = window.window_id();
+        mux.windows.write().insert(window_id, window);
+
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        let mux2 = Arc::clone(&mux);
+        let _worker = std::thread::spawn(move || {
+            let guard = mux2.get_window(window_id);
+            // 断言放在主线程：worker 里 panic 只会让主线程永远等下去。
+            held_tx.send(guard.is_some()).unwrap();
+            go_rx.recv().unwrap();
+            // 嵌套读：写者已排队时旧实现在这里死锁
+            let _ = mux2.get_window(window_id);
+            let _ = mux2.get_active_tab_for_window(window_id);
+            done_tx.send(()).unwrap();
+            drop(guard);
+        });
+
+        assert!(held_rx.recv().unwrap(), "窗口没进 mux");
+        // 写者排队：它要等 worker 手里的读锁清零
+        let mux3 = Arc::clone(&mux);
+        let _writer = std::thread::spawn(move || {
+            let _w = mux3.windows.write();
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        go_tx.send(()).unwrap();
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "持 windows 读锁时调 mux 窗口 API 死锁（读路径要用 read_recursive）"
+        );
     }
 }
