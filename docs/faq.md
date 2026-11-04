@@ -51,6 +51,30 @@ enabled = false
 
 Run `kaku ai`, keep Auth Type set to `api_key`, and enter your Base URL, API Key, Simple Model, and Deep Model manually. Choose **API Mode** `chat_completions` for `/v1/chat/completions`, or `responses` for `/v1/responses`. If the Responses provider supports hosted search, set **Native Web Search** to On; no separate search provider or search API key is required.
 
+## How do I use Kaku in Chinese? (Can I translate the UI?)
+
+The `kaku config` and `kaku ai` screens read an external language pack that maps exact English text to a translation. Create the file next to your config — `~/.config/kaku/lang/zh.json` by default, or `<dir of your --config-file>/lang/zh.json` — with keys byte-for-byte equal to the English text shown in the UI (button copy like "Apply" or "Cancel" is looked up without the surrounding `: ` decoration, and the "↳ " tree connector is dropped as well, so the plain word is the key):
+
+```json
+{
+  "_note": "Keys are the exact English strings shown in the UI, byte for byte. Keys starting with _ are ignored. A missing or invalid entry falls back to English — a raw key can never appear.",
+  "Settings": "设置",
+  "Appearance": "外观",
+  "Navigate": "移动",
+  "Save & Exit": "保存并退出",
+  "Discard": "放弃更改",
+  "Open File": "打开文件",
+  "Apply": "应用",
+  "Cancel": "取消",
+  "Save": "保存",
+  "not installed": "未安装",
+  "Saved {} as {}": "已保存 {} 为 {}",
+  "Save failed: {}": "保存失败：{}"
+}
+```
+
+The locale is picked from `KAKU_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG` (only the primary subtag counts, so `zh_CN.UTF-8` selects `zh.json`; `LC_ALL=C` or `KAKU_LANG=en` forces English). On a Chinese-language system the two config screens show Chinese automatically. Changes to the file take effect the next time the TUI starts. Only the two config screens are covered for now; values you edit (theme names, model names) are data and are never translated — translating those would corrupt your config. Dynamic sentences use `{}` placeholders that the translated value must repeat the same number of times, or the entry is skipped for English. Run `KAKU_I18N_TRACE=1 kaku config` to print each untranslated or stale entry to stderr once, the first time it is seen, while you walk the screens.
+
 ## How do I restore default config?
 
 Run `kaku reset`. It removes Kaku-managed integration and state, including Kaku AI memory and the `backups/` folder, while user-authored Lua outside managed blocks is preserved; see [cli.md](cli.md#kaku-reset) for the full list. Run `kaku init` again if you want shell integration back.
